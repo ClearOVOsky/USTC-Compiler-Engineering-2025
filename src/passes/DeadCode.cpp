@@ -40,11 +40,35 @@ bool DeadCode::clear_basic_blocks(Function *func) {
 
 void DeadCode::mark(Function *func) {
     // TODO
+    work_list.clear();
+    marked.clear();
+    for(auto &bb : func->get_basic_blocks()){
+        for(auto &ins : bb.get_instructions()){
+            if(is_critical(&ins)){
+                mark(&ins);
+            }
+        }
+    }
+    while(!work_list.empty()){
+        auto ins = work_list.front();
+        work_list.pop_front();
+        //遍历指令中的所有操作数
+        for(auto op : ins->get_operands()){
+            if(auto def_ins = dynamic_cast<Instruction*>(op)){
+                mark(def_ins);l
+            }
+        }
+    }
+
     
 }
 
 void DeadCode::mark(Instruction *ins) {
     // TODO
+    // 避免陷入死循环
+    if(marked[ins]): return;
+    marked[ins] = true;
+    work_list.push_back(ins);
 }
 
 bool DeadCode::sweep(Function *func) {
@@ -56,13 +80,26 @@ bool DeadCode::sweep(Function *func) {
     // 4. 注意：删除指令时，需要先删除操作数的引用，然后再删除指令本身
     // 5. 删除指令时，需要注意指令的顺序，不能删除正在遍历的指令
     std::unordered_set<Instruction *> wait_del{};
-
     // 1. 收集所有未被标记的指令
- 
+    for(auto &bb : func->get_basic_blocks()){
+        for(auto &ins : bb.get_instructions()){
+            if(marked.find(&ins) == marked.end()){
+                wait_del.insert(&ins);
+            }
+        }
+    }
 
     // 2. 执行删除
-  
-    
+    if(!wait_del.empty()){
+        for(auto ins : wait_del){
+            ins->remove_all_operands();
+            ins->erase_from_parent();
+            delete ins;
+        }
+        ins_count += wait_del.size();
+        return true;
+    }
+
     return not wait_del.empty(); // changed
 }
 
@@ -73,6 +110,13 @@ bool DeadCode::is_critical(Instruction *ins) {
     // 2. 如果是无用的分支指令，则无用
     // 3. 如果是无用的返回指令，则无用
     // 4. 如果是无用的存储指令，则无用
+    if(ins->is_call()){
+        return true;
+    }
+    if(ins->is_br){return true;}
+    if(ins->is_ret){return true;}
+    if(ins->is_store){return true;}
+    return false;
     
 }
 
