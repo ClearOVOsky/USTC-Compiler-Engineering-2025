@@ -5,6 +5,9 @@
 
 std::string print_as_op(Value *v, bool print_ty) {
     std::string op_ir;
+    if (v == nullptr) {
+        return "null";
+    }
     if (print_ty) {
         op_ir += v->get_type()->print();
         op_ir += " ";

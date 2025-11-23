@@ -44,6 +44,8 @@ private:
     ConstFolder *folder = new ConstFolder(m_);
     // std::stack<GlobalVariable*>
     std::unordered_map<GlobalVariable *, Constant *> globalvar_def;
+    // 局部变量的常量值映射
+    std::unordered_map<Value *, Constant *> localvar_def;
     // basic blocks that need to be removed
     std::vector<BasicBlock *> delete_bb;
 };

@@ -32,6 +32,15 @@ bool DeadCode::clear_basic_blocks(Function *func) {
         }
     }
     for (auto &bb : to_erase) {
+        // 在删除基本块前，先更新所有 phi 指令，移除引用该基本块的操作数对
+        for (auto succ : bb->get_succ_basic_blocks()) {
+            for (auto &inst : succ->get_instructions()) {
+                if (inst.is_phi()) {
+                    auto phi = static_cast<PhiInst *>(&inst);
+                    phi->remove_phi_operand(bb);
+                }
+            }
+        }
         bb->erase_from_parent();
         delete bb;
     }

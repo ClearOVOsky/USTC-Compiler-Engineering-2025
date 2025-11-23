@@ -4,10 +4,13 @@
 #include "BasicBlock.hpp"
 #include "Instruction.hpp"
 #include "Value.hpp"
+#include "Constant.hpp"
 #include "logging.hpp"
 #include <cassert>
 #include <utility>
 #include <vector>
+#include <set>
+#include <map>
 
 void FunctionInline::run() { inline_all_functions(); }
 
@@ -60,7 +63,7 @@ void FunctionInline::inline_all_functions() {
 void FunctionInline::inline_function(Instruction *call, Function *origin) {
     std::map<Value *, Value *> v_map;
     std::vector<BasicBlock *> bb_list;
-    std::vector<Instruction *> ret_list; // 记录函数所有出口
+    std::vector<Instruction *> ret_list;
     for (auto &arg : origin->get_args()) {
         v_map.insert(std::make_pair(static_cast<Value *>(&arg),
                                     call->get_operand(arg.get_arg_no() + 1)));
@@ -79,21 +82,30 @@ void FunctionInline::inline_function(Instruction *call, Function *origin) {
                 ret_void_bbs.push_back(bb_new);
                 continue;
             }
-            if (inst.is_phi()) {
-                ;
-            }
             
             Instruction *inst_new ;
             if (inst.is_call()) {
                 auto call = static_cast<CallInst *>(&inst);
                 auto func = static_cast<Function *>(call->get_operand(0));
-                // 
                 inst_new = new CallInst(func, {call->get_operands().begin() + 1, call->get_operands().end()}, bb_new);
             }
-            else inst_new = inst.clone(bb_new);
-            // 
-            if (inst.is_phi())
-                bb_new->add_instr_begin(inst_new);
+            else {
+                inst_new = inst.clone(bb_new);
+                if (inst.is_phi()) {
+                    bb_new->remove_instr(inst_new);
+                    bb_new->add_instr_begin(inst_new);
+                    for (int i = (int)inst_new->get_num_operand() - 2; i >= 0; i -= 2) {
+                        auto val_op = inst_new->get_operand(i);
+                        auto bb_op = (i + 1 < (int)inst_new->get_num_operand()) ? inst_new->get_operand(i + 1) : nullptr;
+                        if (val_op == nullptr || bb_op == nullptr) {
+                            if (i + 1 < (int)inst_new->get_num_operand()) {
+                                inst_new->remove_operand(i + 1);
+                            }
+                            inst_new->remove_operand(i);
+                        }
+                    }
+                }
+            }
             v_map.insert(std::make_pair(static_cast<Value *>(&inst),
                                         static_cast<Value *>(inst_new)));
             if (inst.is_ret()) {
@@ -103,22 +115,60 @@ void FunctionInline::inline_function(Instruction *call, Function *origin) {
     }
     for (auto bb : bb_list) {
         for (auto &inst : bb->get_instructions()) {
-            for (int i = 0; i < inst.get_num_operand(); i++) {
-                if (inst.is_phi()) {
-                    ;
+            if (inst.is_phi()) {
+                for (unsigned i = 0; i < inst.get_num_operand(); i++) {
+                    auto op = inst.get_operand(i);
+                    if (op != nullptr && v_map.find(op) != v_map.end()) {
+                        auto mapped = v_map[op];
+                        if (mapped != nullptr) {
+                            inst.set_operand(i, mapped);
+                        } else {
+                            inst.set_operand(i, nullptr);
+                        }
+                    }
                 }
-                auto op = inst.get_operand(i);
-                if (v_map.find(op) != v_map.end()) {
-                    inst.set_operand(i, v_map[op]);
+                std::vector<int> to_remove;
+                auto pre_bbs = bb->get_pre_basic_blocks();
+                for (int i = 0; i < (int)inst.get_num_operand(); i += 2) {
+                    auto val_op = inst.get_operand(i);
+                    auto bb_op = (i + 1 < (int)inst.get_num_operand()) ? inst.get_operand(i + 1) : nullptr;
+                    bool should_remove = false;
+                    if (val_op == nullptr || bb_op == nullptr) {
+                        should_remove = true;
+                    } else {
+                        auto bb_operand = dynamic_cast<BasicBlock *>(bb_op);
+                        if (bb_operand == nullptr || std::find(pre_bbs.begin(), pre_bbs.end(), bb_operand) == pre_bbs.end()) {
+                            should_remove = true;
+                        }
+                    }
+                    if (should_remove) {
+                        to_remove.push_back(i);
+                    }
+                }
+                for (int i = to_remove.size() - 1; i >= 0; i--) {
+                    int idx = to_remove[i];
+                    if (idx + 1 < (int)inst.get_num_operand()) {
+                        inst.remove_operand(idx + 1);
+                    }
+                    inst.remove_operand(idx);
+                }
+            } else {
+                for (unsigned i = 0; i < inst.get_num_operand(); i++) {
+                    auto op = inst.get_operand(i);
+                    if (op != nullptr && v_map.find(op) != v_map.end()) {
+                        auto mapped_op = v_map[op];
+                        if (mapped_op != nullptr) {
+                            inst.set_operand(i, mapped_op);
+                        }
+                    }
                 }
             }
         }
     }
-    Value *ret_val = nullptr; // 返回值
+    Value *ret_val = nullptr;
     bool is_terminated = false;
     auto bb_new = BasicBlock::create(call_func->get_parent(), "", call_func);
     if (!origin->get_return_type()->is_void_type()) {
-        // 
         if (ret_list.size() == 1) {
             auto ret = ret_list.front();
             ret_val = ret->get_operand(0);
@@ -126,20 +176,45 @@ void FunctionInline::inline_function(Instruction *call, Function *origin) {
             ret_bb->remove_instr(ret);
             BranchInst::create_br(bb_new, ret_bb);
         } else {
-            // TODO: 处理多个返回值的情况
-            // 提示：
-            // 1. 需要创建一个新的基本块(bb_phi)用于存放phi指令
-            // 2. 对于每个返回指令：
-            //    - 记录其所在的基本块
-            //    - 移除返回指令
-            //    - 添加跳转到bb_phi的分支指令
-            // 3. 创建phi指令：
-            //    - 设置正确的返回类型
-            //    - 为每个返回路径添加phi对
-            // 4. 将phi指令添加到bb_phi
-            // 5. 设置返回值
-            // 6. 将bb_phi添加到基本块列表
-            // 7. 添加从bb_phi到bb_new的跳转
+            auto bb_phi = BasicBlock::create(call_func->get_parent(), "", call_func);
+            std::vector<std::pair<Value *, BasicBlock *>> ret_pairs;
+            for (auto ret : ret_list) {
+                auto ret_bb = ret->get_parent();
+                assert(ret_bb != nullptr && "Return instruction should have a parent basic block");
+                
+                Value *ret_val = nullptr;
+                if (ret->get_num_operand() > 0) {
+                    ret_val = ret->get_operand(0);
+                    if (v_map.find(ret_val) != v_map.end()) {
+                        ret_val = v_map[ret_val];
+                    }
+                }
+                if (ret_val == nullptr) {
+                    ret_val = ConstantZero::get(origin->get_return_type(), call_func->get_parent());
+                }
+                ret_pairs.push_back({ret_val, ret_bb});
+                ret_bb->remove_instr(ret);
+                BranchInst::create_br(bb_phi, ret_bb);
+            }
+            
+            auto phi = PhiInst::create_phi(origin->get_return_type(), bb_phi);
+            for (auto &pair : ret_pairs) {
+                Value *val = pair.first;
+                if (val == nullptr) {
+                    val = ConstantZero::get(origin->get_return_type(), call_func->get_parent());
+                }
+                BasicBlock *bb = pair.second;
+                assert(bb != nullptr && "Basic block should not be nullptr");
+                if (val == nullptr) {
+                    val = ConstantZero::get(origin->get_return_type(), call_func->get_parent());
+                }
+                phi->add_phi_pair_operand(val, bb);
+            }
+            
+            bb_phi->add_instr_begin(phi);
+            ret_val = phi;
+            bb_list.push_back(bb_phi);
+            BranchInst::create_br(bb_new, bb_phi);
         }
     } else {
         assert(ret_void_bbs.size() > 0);
@@ -148,57 +223,134 @@ void FunctionInline::inline_function(Instruction *call, Function *origin) {
         }
     }
     std::vector<Instruction *> del_list;
-    // 
-    // 
     BranchInst* br = nullptr;
+    Instruction* original_terminator = nullptr;
+    BasicBlock* original_target = nullptr;
     for (auto &inst : call_bb->get_instructions()) {
-    // 
         if (!is_terminated) {
-            // 如果前一个基本块还没遇到这条跳转指令
             if (&(inst) == call) {
-                
-                
-                br = BranchInst::create_br(bb_list.front(), call_bb);
-                // bb_1->add_instruction(br);
-                // call_bb->insert_before(&inst, br);
-                // inst.replace_all_use_with(br);
-                if (!origin->get_return_type()->is_void_type()) {
-                    // 
-                    // auto temp = call->get_use_list().begin();
-                    call->replace_all_use_with(ret_val);
-                    // 
-                    // 
-
+                if (call_bb->is_terminated()) {
+                    auto terminator = call_bb->get_terminator();
+                    if (terminator->is_br()) {
+                        auto br_inst = static_cast<BranchInst*>(terminator);
+                        original_target = static_cast<BasicBlock*>(br_inst->get_operand(0));
+                    }
+                    call_bb->remove_instr(terminator);
                 }
-                // call_bb->remove_instr(call);
-                // del_list.push_back(call);
+                br = BranchInst::create_br(bb_list.front(), call_bb);
+                if (!origin->get_return_type()->is_void_type()) {
+                    call->replace_all_use_with(ret_val);
+                }
                 is_terminated = true;
             }
         } else {
-            // call_bb->remove_instr(&inst);
             if(dynamic_cast<BranchInst*>(&inst) == br){
                 continue;
             }
-            del_list.push_back(&inst);
+            if (inst.isTerminator()) {
+                if (inst.is_br()) {
+                    auto br_inst = static_cast<BranchInst*>(&inst);
+                    original_target = static_cast<BasicBlock*>(br_inst->get_operand(0));
+                }
+                del_list.push_back(&inst);
+            } else {
+                del_list.push_back(&inst);
+            }
         }
     }
-    // 
     call_bb->remove_instr(call);
     origin->remove_use(call, 0);
-    // 
+    
     for (auto inst : del_list) {
-        
         call_bb->remove_instr(inst);
-        bb_new->add_instruction(inst);
-        inst->set_parent(bb_new);
+        if (inst->isTerminator()) {
+                if (inst->is_br()) {
+                    auto br_inst = static_cast<BranchInst*>(inst);
+                    auto target_bb = static_cast<BasicBlock*>(br_inst->get_operand(0));
+                    BranchInst::create_br(target_bb, bb_new);
+                } else if (inst->is_ret()) {
+                    bb_new->add_instruction(inst);
+                    inst->set_parent(bb_new);
+                }
+        } else {
+            bb_new->add_instruction(inst);
+            inst->set_parent(bb_new);
+        }
+    }
+    
+    if (!bb_new->is_terminated()) {
+        if (original_target != nullptr && original_target->get_parent() == call_func) {
+            BranchInst::create_br(original_target, bb_new);
+        } else {
+            if (call_func->get_return_type()->is_void_type()) {
+                ReturnInst::create_void_ret(bb_new);
+            } else if (call_func->get_return_type()->is_integer_type()) {
+                auto zero = ConstantInt::get(0, call_func->get_parent());
+                ReturnInst::create_ret(zero, bb_new);
+            } else if (call_func->get_return_type()->is_float_type()) {
+                auto zero = ConstantFP::get(0.0f, call_func->get_parent());
+                ReturnInst::create_ret(zero, bb_new);
+            } else {
+                auto zero = ConstantZero::get(call_func->get_return_type(), call_func->get_parent());
+                ReturnInst::create_ret(zero, bb_new);
+            }
+        }
     }
 
-    // 
-    // br->set_parent(call_bb);
-    // 
     origin->reset_bbs();
-    // 
     call_func->reset_bbs();
+    
+    std::set<BasicBlock *> all_bbs_set;
+    for (auto bb : bb_list) {
+        all_bbs_set.insert(bb);
+    }
+    all_bbs_set.insert(bb_new);
+    for (auto &bb : call_func->get_basic_blocks()) {
+        all_bbs_set.insert(&bb);
+    }
+    
+    for (auto bb : all_bbs_set) {
+        for (auto &inst : bb->get_instructions()) {
+            if (inst.is_phi()) {
+                auto phi_inst = static_cast<PhiInst *>(&inst);
+                auto pre_bbs = bb->get_pre_basic_blocks();
+                std::map<BasicBlock *, Value *> phi_map;
+                for (int i = 0; i < (int)inst.get_num_operand(); i += 2) {
+                    if (i + 1 < (int)inst.get_num_operand()) {
+                        auto val_op = inst.get_operand(i);
+                        auto bb_op = inst.get_operand(i + 1);
+                        if (val_op != nullptr && bb_op != nullptr) {
+                            auto bb_operand = dynamic_cast<BasicBlock *>(bb_op);
+                            if (bb_operand != nullptr) {
+                                phi_map[bb_operand] = val_op;
+                            }
+                        }
+                    }
+                }
+                
+                while (inst.get_num_operand() > 0) {
+                    inst.remove_operand(0);
+                }
+                
+                auto phi_type = inst.get_type();
+                for (auto pre_bb : pre_bbs) {
+                    Value *val = nullptr;
+                    if (phi_map.find(pre_bb) != phi_map.end()) {
+                        val = phi_map[pre_bb];
+                    } else {
+                        if (phi_type->is_integer_type()) {
+                            val = ConstantInt::get(0, call_func->get_parent());
+                        } else if (phi_type->is_float_type()) {
+                            val = ConstantFP::get(0.0f, call_func->get_parent());
+                        } else {
+                            val = ConstantZero::get(phi_type, call_func->get_parent());
+                        }
+                    }
+                    phi_inst->add_phi_pair_operand(val, pre_bb);
+                }
+            }
+        }
+    }
     
     return;
 }

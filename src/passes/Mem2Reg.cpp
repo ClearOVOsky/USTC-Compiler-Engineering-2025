@@ -88,8 +88,12 @@ void Mem2Reg::rename(BasicBlock *bb) {
     // 出的地址空间
     for (auto &instr : bb->get_instructions()) {
         if (instr.is_phi()) {
-            auto l_val = phi_lval.at(static_cast<PhiInst *>(&instr));
-            var_val_stack[l_val].push_back(&instr);
+            auto phi = static_cast<PhiInst *>(&instr);
+            // 检查这个 PHI 指令是否在 phi_lval 中（可能被其他优化 pass 修改）
+            if (phi_lval.find(phi) != phi_lval.end()) {
+                auto l_val = phi_lval.at(phi);
+                var_val_stack[l_val].push_back(phi);
+            }
         }
     }
 
@@ -121,11 +125,15 @@ void Mem2Reg::rename(BasicBlock *bb) {
     for (auto succ_bb : bb->get_succ_basic_blocks()) {
         for (auto &instr : succ_bb->get_instructions()) {
             if (instr.is_phi()) {
-                auto l_val = phi_lval.at(static_cast<PhiInst *>(&instr));
-                if (var_val_stack.find(l_val) != var_val_stack.end() &&
-                    var_val_stack[l_val].size() != 0) {
-                    static_cast<PhiInst *>(&instr)->add_phi_pair_operand(
-                        var_val_stack[l_val].back(), bb);
+                auto phi = static_cast<PhiInst *>(&instr);
+                // 检查这个 PHI 指令是否在 phi_lval 中（可能被其他优化 pass 修改）
+                if (phi_lval.find(phi) != phi_lval.end()) {
+                    auto l_val = phi_lval.at(phi);
+                    if (var_val_stack.find(l_val) != var_val_stack.end() &&
+                        var_val_stack[l_val].size() != 0) {
+                        phi->add_phi_pair_operand(
+                            var_val_stack[l_val].back(), bb);
+                    }
                 }
                 // 对于 phi 参数只有一个前驱定值的情况，将会输出 [ undef, bb ]
                 // 的参数格式
@@ -146,9 +154,13 @@ void Mem2Reg::rename(BasicBlock *bb) {
                 var_val_stack[l_val].pop_back();
             }
         } else if (instr.is_phi()) {
-            auto l_val = phi_lval.at(static_cast<PhiInst *>(&instr));
-            if (var_val_stack.find(l_val) != var_val_stack.end()) {
-                var_val_stack[l_val].pop_back();
+            auto phi = static_cast<PhiInst *>(&instr);
+            // 检查这个 PHI 指令是否在 phi_lval 中（可能被其他优化 pass 修改）
+            if (phi_lval.find(phi) != phi_lval.end()) {
+                auto l_val = phi_lval.at(phi);
+                if (var_val_stack.find(l_val) != var_val_stack.end()) {
+                    var_val_stack[l_val].pop_back();
+                }
             }
         }
     }

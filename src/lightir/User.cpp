@@ -32,10 +32,14 @@ void User::remove_operand(unsigned idx) {
     assert(idx < operands_.size() && "remove_operand out of index");
     // influence on other operands
     for (unsigned i = idx + 1; i < operands_.size(); ++i) {
-        operands_[i]->remove_use(this, i);
-        operands_[i]->add_use(this, i - 1);
+        if (operands_[i]) {
+            operands_[i]->remove_use(this, i);
+            operands_[i]->add_use(this, i - 1);
+        }
     }
     // remove the designated operand
-    operands_[idx]->remove_use(this, idx);
+    if (operands_[idx]) {
+        operands_[idx]->remove_use(this, idx);
+    }
     operands_.erase(operands_.begin() + idx);
 }
